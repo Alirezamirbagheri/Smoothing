@@ -9,6 +9,20 @@ import pandas as pd
 import numpy as np
 
 
+def get_limits(results):
+    """Calculates min/max bounds for all paths."""
+    all_x = np.concatenate([d['x_smoothed'] for d in results if d['x_smoothed'].size])
+    all_y = np.concatenate([d['y_smoothed'] for d in results if d['y_smoothed'].size])
+
+    if all_x.size == 0 or all_y.size == 0:
+        # Return sensible defaults if no points are found
+        return 0, 100, 0, 100
+
+    min_x, max_x = all_x.min(), all_x.max()
+    min_y, max_y = all_y.min(), all_y.max()
+
+    # Add padding
+    return min_x - 50, max_x + 50, min_y - 50, max_y + 50
 def plot_static_paths(results, num_movers):
     """Generates and displays static plots of original vs. smoothed paths."""
     print("\n--- Generating Static Plots ---")
@@ -79,99 +93,126 @@ def animate_single_movers(results, config):
 
 
 def animate_global_movers(results, num_movers, config):
-    """Generates and saves a multi-mover animation with scaled velocity."""
+    """
+    Generates and saves a multi-mover animation with velocity scaled based on
+    NumRawPoints / TotalRawPoints (Density Scaling).
+    """
     if not config['ANIMATE_ALL']:
         return
 
-    print("\n--- Generating Global Animation ---")
+    print("\n--- Generating Global Animation (Using Density Scaling) ---")
 
     # --- 1. Precompute density factors for animation ---
     mover_segment_density = []
 
-    # Load the updated coefficient file for density factor calculation
     try:
+        # Load the final coefficient file (ParametricSplineCoeff.csv)
         df_coeff = pd.read_csv(config['COEFF_OUTPUT_FILE_UPDATED'])
-        # Calculate the density factor (Length_Weight / RawPointsWeight)
-        df_coeff['Density_Factor'] = (
-                df_coeff['Length_Weight'] / df_coeff['RawPointsWeight']
-        ).replace([np.inf, -np.inf], 1.0).fillna(1.0)
     except FileNotFoundError:
-        print(f"Warning: {config['COEFF_OUTPUT_FILE_UPDATED']} not found. Using default density factor of 1.0.")
-        df_coeff = pd.DataFrame()
+        print(f"Warning: {config['COEFF_OUTPUT_FILE_UPDATED']} not found. Skipping global animation.")
+        return
 
-    for mover_idx, data in enumerate(results):
+    all_x = np.concatenate([d['x_smoothed'] for d in results if d['x_smoothed'].size])
+    all_y = np.concatenate([d['y_smoothed'] for d in results if d['y_smoothed'].size])
+
+    if all_x.size == 0 or all_y.size == 0:
+        print("Warning: No smoothed points found. Cannot generate global animation.")
+        return
+
+    for mover_idx in range(num_movers):
+        df_mover = df_coeff[df_coeff['Mover'] == mover_idx + 1].copy()
+        data = results[mover_idx]
         x_s, y_s, tck = data['x_smoothed'], data['y_smoothed'], data['tck']
 
-        t_smooth = arc_length_param(x_s, y_s)
-        seg_density = np.zeros(len(x_s))
+        # Calculate Total Raw Points for this mover
+        total_raw_points = df_mover['NumRawPoints'].sum()
 
-        df_mover = df_coeff[df_coeff['Mover'] == mover_idx + 1].reset_index(drop=True)
-
-        if tck is None or df_mover.empty:
-            seg_density[:] = 1.0
+        if total_raw_points == 0 or tck is None:
+            df_mover['Density_Factor'] = 1.0
+            seg_density = np.ones(len(x_s))
+            print(f"Warning: Mover {mover_idx + 1} has zero raw points or no spline. Using uniform speed.")
         else:
+            # Density_Factor = (Segment Raw Points / Total Raw Points)
+            df_mover['Density_Factor'] = df_mover['NumRawPoints'] / total_raw_points
+
+            # Map the density factors onto the smoothed points array
+            t_smooth = arc_length_param(x_s, y_s)
+            seg_density = np.zeros(len(x_s))
+
             tx, c, k = tck
             ppx = PPoly.from_spline((tx, c[0], k))
             valid_indices = [j for j in range(len(ppx.x) - 1) if abs(ppx.x[j + 1] - ppx.x[j]) > 1e-9]
 
             for seg_idx_local, j in enumerate(valid_indices):
-                u_start = float(ppx.x[j])
+                u_start = float(ppx.x[j]);
                 u_end = float(ppx.x[j + 1])
                 mask = (t_smooth >= u_start) & (t_smooth <= u_end)
 
-                density = df_mover.loc[seg_idx_local, 'Density_Factor'] if seg_idx_local < len(df_mover) else 1.0
+                # Retrieve the calculated Density_Factor for this segment
+                density = df_mover.loc[df_mover['Segment'] == seg_idx_local + 1, 'Density_Factor'].iloc[0]
                 seg_density[mask] = density
 
         mover_segment_density.append(seg_density)
 
-    # --- 2. Setup Animation ---
-    fig, ax = plt.subplots(figsize=(8, 8))
-    ax.set_title("All Movers (Scaled Velocity)")
-    ax.axis('equal')
+    # --- 2. Setup Animation (Fixes NameError) ---
+    # Assuming get_limits is defined in animations.py
+    min_x, max_x, min_y, max_y = get_limits(results)
 
-    all_x = np.concatenate([r['x_smoothed'] for r in results])
-    all_y = np.concatenate([r['y_smoothed'] for r in results])
-    ax.set_xlim(np.min(all_x) - config['MOVER_SIZE'], np.max(all_x) + config['MOVER_SIZE'])
-    ax.set_ylim(np.min(all_y) - config['MOVER_SIZE'], np.max(all_y) + config['MOVER_SIZE'])
+    fig, ax = plt.subplots(figsize=(10, 10))
 
-    colors = plt.cm.tab10(np.linspace(0, 1, num_movers))
-    rects, paths = [], []
+    ax.set_xlim(min_x, max_x)
+    ax.set_ylim(min_y, max_y)
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_title('Global Mover Animation with Raw Point Density Scaling')
+    ax.set_xlabel('X Position (mm)')
+    ax.set_ylabel('Y Position (mm)')
+    ax.grid(True)
 
+    # Plot all paths
     for i, data in enumerate(results):
-        x_s, y_s = data['x_smoothed'], data['y_smoothed']
-        path, = ax.plot(x_s, y_s, '-', color=colors[i], alpha=0.5)
-        rect = Rectangle((x_s[0] - config['MOVER_SIZE'] / 2, y_s[0] - config['MOVER_SIZE'] / 2),
-                         config['MOVER_SIZE'], config['MOVER_SIZE'],
-                         facecolor=colors[i], alpha=0.3, edgecolor='k')
+        ax.plot(data['x_smoothed'], data['y_smoothed'], linestyle='--', alpha=0.5, linewidth=1,
+                color=plt.cm.get_cmap('hsv')(i / num_movers))
+
+    # Create mover rectangles
+    rects = []
+    for i in range(num_movers):
+        if results[i]['x_smoothed'].size == 0:
+            continue
+
+        rect = Rectangle(
+            (results[i]['x_smoothed'][0] - config['MOVER_SIZE'] / 2,
+             results[i]['y_smoothed'][0] - config['MOVER_SIZE'] / 2),
+            config['MOVER_SIZE'], config['MOVER_SIZE'],
+            color=plt.cm.get_cmap('hsv')(i / num_movers),
+            alpha=0.8, fill=True
+        )
         ax.add_patch(rect)
         rects.append(rect)
-        paths.append(path)
 
-    for i, data in enumerate(results):
-        x_s, y_s = data['x_smoothed'], data['y_smoothed']
-        ax.plot(x_s[0], y_s[0], 'go', ms=5, label=f'Mover {i + 1} Start' if i == 0 else "")
-        ax.plot(x_s[-1], y_s[-1], 'ro', ms=5, label=f'Mover {i + 1} End' if i == 0 else "")
-    ax.legend()
+    max_frames = max(len(r['x_smoothed']) for r in results) if results else 0
 
-    max_frames = max(len(r['x_smoothed']) for r in results)
-
-    # --- 3. Update Function ---
+    # --- 3. Define Update Function (Density Scaling) ---
     def update(frame_idx):
         artists_to_draw = []
         for i, data in enumerate(results):
+            if i >= len(rects): continue
+
             x_s, y_s = data['x_smoothed'], data['y_smoothed']
             if not x_s.size: continue
 
+            # Get current index, clamping to the path length
             idx = min(frame_idx, len(x_s) - 1)
             xi, yi = x_s[idx], y_s[idx]
 
             rects[i].set_xy((xi - config['MOVER_SIZE'] / 2, yi - config['MOVER_SIZE'] / 2))
             artists_to_draw.append(rects[i])
 
-            scaled_velocity = config['VELOCITY'] * mover_segment_density[i][idx]
+            # Get the time factor (density) for the current segment
+            time_factor = mover_segment_density[i][idx]
+            display_factor = time_factor * 100  # Display as percentage of total time
 
             text_x, text_y = xi, yi + config['MOVER_SIZE'] / 2 + 20
-            text_str = f'{scaled_velocity:.1f} | Mover {i + 1}'
+            text_str = f'Time Factor: {display_factor:.1f}% | Mover {i + 1}'
 
             if hasattr(rects[i], 'txt'):
                 rects[i].txt.set_position((text_x, text_y))
@@ -186,11 +227,13 @@ def animate_global_movers(results, num_movers, config):
 
         return artists_to_draw
 
-    # --- 4. Run/Save Animation ---
-    ani_global = FuncAnimation(fig, update, frames=max_frames, interval=40, blit=True, repeat=True)
+    # --- 4. Run and Save Animation ---
+    if max_frames > 1:
+        ani_global = FuncAnimation(fig, update, frames=max_frames, interval=40, blit=True, repeat=True)
 
-    # Save as GIF
-    ani_global.save(config['GLOBAL_ANIMATION_FILE'], writer='pillow', fps=25)
-    print(f"✅ Global animation saved as {config['GLOBAL_ANIMATION_FILE']}")
+        ani_global.save(config['GLOBAL_ANIMATION_FILE'], writer='pillow', fps=25)
+        print(f"✅ Global animation saved as {config['GLOBAL_ANIMATION_FILE']}")
 
-    plt.show()
+        plt.show()
+    else:
+        print("Warning: Max frames is too low. Skipping animation generation.")

@@ -17,7 +17,6 @@ INPUT_FILE = 'data/New_Coord_20251021.csv'
 SMOOTHED_POINTS_FILE = 'Results/MoverPoints.csv'
 COEFF_OUTPUT_FILE_OLD = 'Results/ParametricSplineCoeff_old.csv'
 COEFF_OUTPUT_FILE_UPDATED = 'Results/ParametricSplineCoeff.csv'
-COVERAGE_FILE_PATTERN = 'Results/MoverPointsCoverage_Mover{}.csv'
 SMOOTHED_SEG_MAP_FILE = 'Results/SmoothedPointsPerSplineSegment.csv'
 RAW_SEG_MAP_FILE = 'Results/NumRawPointsPerSplineSegment.csv'
 GLOBAL_ANIMATION_FILE = "Results/GlobalAnimation.gif"
