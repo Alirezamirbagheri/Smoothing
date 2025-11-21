@@ -2,21 +2,12 @@
 
 from config import *
 from helpers import arc_length_param
-from config import *
-from helpers import arc_length_param
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 import pandas as pd
 import numpy as np
 from scipy.interpolate import splev, PPoly
-# --- IMPORT COLLISION CHECKER ---
-# Assuming collision_check.py or a helper function is available to import
-try:
-    from collision_check import _precompute_mover_positions
-except ImportError:
-    # Fallback definition if the module isn't strictly loaded
-    def _precompute_mover_positions(*args): return None, None
 
 
 def get_limits(results):
@@ -106,64 +97,117 @@ def animate_single_movers(results, config):
 
 def animate_global_movers(results, num_movers, config):
     """
-    Generates and saves a multi-mover animation with collision visualization.
-    Movers turn RED when they are involved in a collision.
+    Generates and saves a multi-mover animation where segment velocity is scaled
+    by NumRawPoints (Time-Based Density Scaling), displaying elapsed time and
+    passed length percentage.
     """
     if not config['ANIMATE_ALL']:
         return
 
-    print("\n--- Generating Global Animation (Density-Scaled, Collision Visualized) ---")
+    print("\n--- Generating Global Animation (Density-Scaled Time & Progress Display) ---")
 
-    # --- 1. Load Data and Determine Global Time Parameters (PRECOMPUTATION) ---
+    # --- 1. Load Data and Determine Global Time Parameters ---
+
     try:
         df_coeff = pd.read_csv(config['COEFF_OUTPUT_FILE_UPDATED'])
     except FileNotFoundError:
         print(f"Warning: {config['COEFF_OUTPUT_FILE_UPDATED']} not found. Skipping global animation.")
         return
 
-    # --- FIX: CALL THE PRECOMPUTATION FUNCTION ---
-    # Call the helper function from collision_check.py to get positions and time
-    mover_pos_at_time, T_global = _precompute_mover_positions(results, config)
-    # ---------------------------------------------
-
-    if mover_pos_at_time is None:
-        print("Warning: Could not precompute positions. Skipping global animation.")
+    all_x = np.concatenate([d['x_smoothed'] for d in results if d['x_smoothed'].size])
+    if all_x.size == 0:
+        print("Warning: No smoothed points found. Cannot generate global animation.")
         return
 
-    # --- FIX 2: Define FPS (kept for reference, should be outside the previous 'if') ---
-    FPS = 25  # Define the constant FPS used for animation speed/time calculation
-    # -----------------------------------------------------------------------------------
+    mover_total_raw_points = []
 
-    # T_global is now defined and populated
-    num_frames = len(T_global)
-    T_sim = T_global[-1]
+    for mover_idx in range(num_movers):
+        df_mover = df_coeff[df_coeff['Mover'] == mover_idx + 1].copy()
+        total_raw_points = df_mover['NumRawPoints'].sum()
+        mover_total_raw_points.append(total_raw_points)
 
-    # Update: Use threshold for AABB check
-    threshold = config['MOVER_SIZE']
+    max_raw_points = max(mover_total_raw_points) if mover_total_raw_points else 0
 
-    # --- 2. Collision Mapping Setup ---
-    collision_flags = [np.zeros(num_frames, dtype=bool) for _ in range(num_movers)]
+    if config['VELOCITY'] <= 0 or max_raw_points <= 0:
+        print("Warning: Velocity or max raw point count is zero. Skipping global animation.")
+        return
 
-    # Iterate over all unique pairs (i, j) where i < j
-    for i in range(num_movers):
-        for j in range(i + 1, num_movers):
-            pos_A = mover_pos_at_time[i]
-            pos_B = mover_pos_at_time[j]
+    FPS = 25
+    T_sim = max_raw_points / FPS
+    num_frames = max_raw_points
 
-            # 1. Calculate absolute distance in X and Y
-            dist_x = np.abs(pos_A[:, 0] - pos_B[:, 0])
-            dist_y = np.abs(pos_A[:, 1] - pos_B[:, 1])
+    T_global = np.linspace(0, T_sim, num_frames)
 
-            # 2. Collision occurs if both conditions are met (AABB overlap)
-            collision_mask = (dist_x < threshold) & (dist_y < threshold)
+    # --- 2. Precompute Mover Positions vs. Time (Density-Scaled) ---
 
-            active_collision_frames = np.where(collision_mask)[0]
+    mover_pos_at_time = []
+    mover_u_at_time = []  # NEW: Store normalized parameter u for length calculation
 
-            if active_collision_frames.size > 0:
-                # Set the flag for both movers A and B for all frames where collision is active
-                collision_flags[i][active_collision_frames] = True
-                collision_flags[j][active_collision_frames] = True
-                print(f"Collision frames found between Mover {i + 1} and Mover {j + 1}.")
+    for mover_idx in range(num_movers):
+        df_mover = df_coeff[df_coeff['Mover'] == mover_idx + 1].copy()
+        data = results[mover_idx]
+        tck = data['tck']
+
+        if tck is None or data['path_len'] <= 0:
+            start_pos = [data['x_smoothed'][0], data['y_smoothed'][0]] if data['x_smoothed'].size else [0, 0]
+            mover_pos_at_time.append(np.tile(start_pos, (num_frames, 1)))
+            mover_u_at_time.append(np.zeros(num_frames))  # u=0 for static path
+            continue
+
+        path_len = data['path_len']
+        current_mover_raw_points = mover_total_raw_points[mover_idx]
+
+        if current_mover_raw_points > 0:
+            df_mover['Time_sec'] = T_sim * (df_mover['NumRawPoints'] / max_raw_points)
+            df_mover['V_seg_mm_s'] = df_mover['Length_mm'] / df_mover['Time_sec']
+        else:
+            V_uniform = path_len / T_sim
+            df_mover['V_seg_mm_s'] = V_uniform
+            df_mover['Time_sec'] = df_mover['Length_mm'] / V_uniform
+
+        df_mover['T_cum_end'] = df_mover['Time_sec'].cumsum()
+        df_mover['T_cum_start'] = df_mover['T_cum_end'].shift(1, fill_value=0.0)
+
+        path_at_time = np.zeros((num_frames, 2))
+        u_at_time = np.zeros(num_frames)
+
+        # Iterate over global time points T_global
+        for t_idx, t_g in enumerate(T_global):
+            segment = df_mover[(t_g >= df_mover['T_cum_start']) & (t_g < df_mover['T_cum_end'])]
+
+            if segment.empty:
+                # Time is past the end of the path
+                u_g = 1.0
+                pos_xy = np.array(splev(u_g, tck)).flatten()
+            else:
+                # Segment data
+                u_start = segment['U_Start'].iloc[0]
+                u_end = segment['U_End'].iloc[0]
+                t_start = segment['T_cum_start'].iloc[0]
+                v_seg = segment['V_seg_mm_s'].iloc[0]
+                seg_len = segment['Length_mm'].iloc[0]
+
+                time_in_seg = t_g - t_start
+                distance_in_seg = v_seg * time_in_seg
+
+                u_seg_length = u_end - u_start
+                if seg_len > 1e-6:
+                    u_local = distance_in_seg / seg_len
+                    u_g = u_start + u_local * u_seg_length
+                else:
+                    u_g = u_start  # Segment is point-like
+
+                u_g = np.clip(u_g, u_start, u_end)
+
+                # Use the spline object to get the (x, y) coordinates at parameter u_g
+                pos_xy = np.array(splev(u_g, tck)).flatten()
+
+            path_at_time[t_idx, :] = pos_xy
+            u_at_time[t_idx] = u_g  # Store u_g
+
+        mover_pos_at_time.append(path_at_time)
+        mover_u_at_time.append(u_at_time)
+
     # --- 3. Setup Animation Plot ---
     min_x = 0 - config['PLOT_PADDING_MM']
     max_x = config['TABLE_LENGTH_MM'] + config['PLOT_PADDING_MM']
@@ -174,21 +218,15 @@ def animate_global_movers(results, num_movers, config):
     ax.set_xlim(min_x, max_x)
     ax.set_ylim(min_y, max_y)
     ax.set_aspect('equal', adjustable='box')
-    ax.set_title(f'Global Mover Animation (Collision Visualized) | T_sim={T_sim:.1f} s')
+    ax.set_title(f'Global Mover Animation (Density-Scaled) | T_sim={T_sim:.1f} s | V_ref={config["VELOCITY"]:.0f} mm/s')
     ax.set_xlabel(f'X Position (mm)')
     ax.set_ylabel(f'Y Position (mm)')
     ax.grid(True)
 
-    # Plot all paths (Original paths need to be retrieved from results, as in previous versions)
+    # Plot all paths
     for i, data in enumerate(results):
         ax.plot(data['x_smoothed'], data['y_smoothed'], linestyle='--', alpha=0.5, linewidth=1,
                 color=plt.cm.get_cmap('hsv')(i / num_movers))
-
-    # Store the default color for later use.
-    # We add a hue offset (e.g., 0.25 for green/cyan start) to avoid red as the default color for Mover 1.
-    color_offset = 0.25
-    default_colors = [plt.cm.get_cmap('hsv')((i / num_movers + color_offset) % 1.0)
-                      for i in range(num_movers)]
 
     # Create mover rectangles
     rects = []
@@ -197,64 +235,44 @@ def animate_global_movers(results, num_movers, config):
         rect = Rectangle(
             (x_start - config['MOVER_SIZE'] / 2, y_start - config['MOVER_SIZE'] / 2),
             config['MOVER_SIZE'], config['MOVER_SIZE'],
-            color=default_colors[i],  # Use the newly offset default color
+            color=plt.cm.get_cmap('hsv')(i / num_movers),
             alpha=0.8, fill=True
         )
         ax.add_patch(rect)
         rects.append(rect)
-    # --- 4. Define Update Function (Collision Coloring) ---
+
+    # --- 4. Define Update Function (Time-Based) ---
     def update(frame_idx):
         artists_to_draw = []
         current_time = T_global[frame_idx]
 
-        for i in range(num_movers):
+        for i, data in enumerate(results):
             if i >= len(rects): continue
 
             xi, yi = mover_pos_at_time[i][frame_idx, :]
+            u_progress = mover_u_at_time[i][frame_idx]  # Get stored u value
 
-            # --- COLLISION CHECK AND COLOR CHANGE ---
-            if collision_flags[i][frame_idx]:
-                rects[i].set_color('red')  # Set color to red on collision
-            else:
-                rects[i].set_color(default_colors[i])  # Revert to default color
-            # ----------------------------------------
+            # Since the B-spline parameter 'u' is a normalized arc length
+            # when fitting is based on chord length parameterization,
+            # u_progress * 100 gives the percentage of the path traversed.
+            percent_progress = u_progress * 100.0
 
             # Update Mover Rectangle position
             rects[i].set_xy((xi - config['MOVER_SIZE'] / 2, yi - config['MOVER_SIZE'] / 2))
             artists_to_draw.append(rects[i])
 
-            # --- Update Text Label (Time and Percentage) ---
-            # Retrieve u_progress (requires precalculating u_at_time, which is not in this simplified precompute)
-            # Reverting to time display only for simplicity or assuming u_at_time is also passed/available.
-
-            # Since the full precompute data is needed, we assume the necessary u_at_time
-            # (which was stored in mover_u_at_time in the last implementation) is available
-            # or we re-integrate that part of the precompute logic.
-
-            # For this context, I will assume the u-progress array is also calculated
-            # within the precomputation and stored in a list of arrays called `mover_u_at_time`.
-            # Since I cannot modify all files at once, I will simplify the text display
-            # to be safe, or you can ensure mover_u_at_time is passed here.
-
-            # Assuming `mover_u_at_time` is available for calculation:
-            try:
-                # If the u array was precomputed and passed/available:
-                u_progress = mover_u_at_time[i][frame_idx]
-                percent_progress = u_progress * 100.0
-                text_str = (f'Mover {i + 1} | Time: {current_time:.2f} s\n'
-                            f'Progress: {percent_progress:.1f} %')
-            except NameError:
-                # Fallback if u_at_time wasn't explicitly passed/computed in this scope
-                text_str = f'Mover {i + 1} | Time: {current_time:.2f} s'
-
+            # --- Update Text Label (Displaying Time AND Percentage) ---
             text_x, text_y = xi, yi + config['MOVER_SIZE'] / 2 + 20
+            # Combine time and percentage into a single label
+            text_str = (f'Mover {i + 1} | Time: {current_time:.2f} s\n'
+                        f'Progress: {percent_progress:.1f} %')
 
             if not hasattr(rects[i], 'txt'):
                 rects[i].txt = ax.text(
                     text_x, text_y,
                     text_str,
                     color='k', fontsize=9, ha='center', va='bottom',
-                    bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=2)
+                    bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=2)  # Added background for readability
                 )
             else:
                 rects[i].txt.set_position((text_x, text_y))
@@ -265,7 +283,6 @@ def animate_global_movers(results, num_movers, config):
 
     # --- 5. Run and Save Animation ---
     if num_frames > 1:
-        # The line below now has FPS defined:
         ani_global = FuncAnimation(fig, update, frames=num_frames, interval=1000 / FPS, blit=True, repeat=True)
 
         ani_global.save(config['GLOBAL_ANIMATION_FILE'], writer='pillow', fps=FPS)
