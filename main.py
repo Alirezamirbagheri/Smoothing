@@ -33,10 +33,11 @@ def main():
 
     # --- STEP 3: Parameter Extraction & Export (Simplified) ---
 
-    # A. Initial Exports
+    # A. Initial Exports: Saves the final resampled coordinate points (MoverPoints.csv).
     save_smoothed_points_csv(results, config['SMOOTHED_POINTS_FILE'], config['RESAMPLE_POINTS'])
 
-    # B. Single call to generate the final coefficient file
+    # B. Coefficient Generation: Calculates spline coefficients and raw point counts,
+    #    merging both into the final file (ParametricSplineCoeff.csv) in a single step.
     generate_final_segment_coeffs(results, config['COEFF_OUTPUT_FILE_UPDATED'])
 
     # --- STEP 4: Visualization (animations.py) ---
