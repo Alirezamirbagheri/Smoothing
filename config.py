@@ -27,9 +27,9 @@ RESAMPLE_POINTS = 500
 ANIMATE = True
 ANIMATE_ALL = True        # new global animation
 K_ORDER = 3
-MAX_DEV_ALLOWED = 10
+MAX_DEV_ALLOWED = 1
 MOVER_SIZE = 155.0  # mm, side length of square mover
-VELOCITY = 200.0    # mm/s (assumed for global animation)
+VELOCITY = 100.0    # mm/s (assumed for global animation)
 
 # --- TABLE DIMENSIONS FOR PLOTTING LIMITS ---
 TABLE_LENGTH_MM = 1785.0
