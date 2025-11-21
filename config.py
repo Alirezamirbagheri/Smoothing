@@ -18,6 +18,8 @@ SMOOTHED_POINTS_FILE = 'Results/MoverPoints.csv'
 COEFF_OUTPUT_FILE_UPDATED = 'Results/ParametricSplineCoeff.csv'
 SMOOTHED_SEG_MAP_FILE = 'Results/SmoothedPointsPerSplineSegment.csv'
 GLOBAL_ANIMATION_FILE = "Results/GlobalAnimation.gif"
+COEFF_OUTPUT_FILE_AVOIDANCE = 'Results/ParametricSplineCoeff_Avoidance.csv' # Add to config
+SMOOTHED_POINTS_FILE_AVOIDANCE = 'Results/SmoothedPoints_Avoidance.csv' # Add to config
 
 # TUNABLES
 RDP_TOL = 5.0            # RDP simplification tolerance
@@ -27,7 +29,7 @@ RESAMPLE_POINTS = 500
 ANIMATE = True
 ANIMATE_ALL = True        # new global animation
 K_ORDER = 3
-MAX_DEV_ALLOWED = 1
+MAX_DEV_ALLOWED = 10
 MOVER_SIZE = 155.0  # mm, side length of square mover
 VELOCITY = 100.0    # mm/s (assumed for global animation)
 
