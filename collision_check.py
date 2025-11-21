@@ -36,6 +36,7 @@ def _precompute_mover_positions(results, config):
     T_global = np.linspace(0, T_sim, num_frames)
 
     mover_pos_at_time = []
+    mover_u_at_time = []
 
     for mover_idx in range(len(results)):
         df_mover = df_coeff[df_coeff['Mover'] == mover_idx + 1].copy()
@@ -63,6 +64,7 @@ def _precompute_mover_positions(results, config):
         df_mover['T_cum_start'] = df_mover['T_cum_end'].shift(1, fill_value=0.0)
 
         path_at_time = np.zeros((num_frames, 2))
+        u_at_time = np.zeros(num_frames)
 
         # Calculate position for every time step
         for t_idx, t_g in enumerate(T_global):
@@ -86,10 +88,12 @@ def _precompute_mover_positions(results, config):
                 pos_xy = np.array(splev(u_g, tck)).flatten()
 
             path_at_time[t_idx, :] = pos_xy
+            u_at_time[t_idx] = u_g
 
         mover_pos_at_time.append(path_at_time)
+        mover_u_at_time.append(u_at_time)
 
-    return mover_pos_at_time, T_global
+    return mover_pos_at_time, T_global, mover_u_at_time
 
 
 def check_mover_collisions(results, config):
@@ -97,8 +101,7 @@ def check_mover_collisions(results, config):
     Checks for spatial and temporal collisions between all mover pairs
     using the AABB overlap criteria.
     """
-    mover_pos_at_time, T_global = _precompute_mover_positions(results, config)
-    # ... (Error checking remains the same) ...
+    mover_pos_at_time, T_global, mover_u_at_time = _precompute_mover_positions(results, config)    # ... (Error checking remains the same) ...
 
     num_movers = len(results)
     # Collision is defined by AABB overlap: distance in X < S AND distance in Y < S

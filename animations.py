@@ -121,9 +121,8 @@ def animate_global_movers(results, num_movers, config):
         print(f"Warning: {config['COEFF_OUTPUT_FILE_UPDATED']} not found. Skipping global animation.")
         return
 
-    # --- FIX: CALL THE PRECOMPUTATION FUNCTION ---
-    # Call the helper function from collision_check.py to get positions and time
-    mover_pos_at_time, T_global = _precompute_mover_positions(results, config)
+    # --- FIX: Capture the third return variable (u-progress) ---
+    mover_pos_at_time, T_global, mover_u_at_time = _precompute_mover_positions(results, config)
     # ---------------------------------------------
 
     if mover_pos_at_time is None:

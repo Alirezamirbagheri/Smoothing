@@ -7,7 +7,7 @@ from scipy.interpolate import splev  # Needed for path length re-calculation if 
 from collision_check import _precompute_mover_positions  # Reuse the precomputation logic
 
 # --- Configuration Constants for Avoidance ---
-COLLISION_BUFFER_SEC = 3.0  # Time window before and after the collision point
+COLLISION_BUFFER_SEC = 2.0  # Time window before and after the collision point
 VELOCITY_ADJUSTMENT_FACTOR = 0.8  # Factor to reduce/increase velocity (e.g., reduce by 50% / increase by 50%)
 
 # Add FPS definition here, or inside resolve_collisions
@@ -76,9 +76,7 @@ def resolve_collisions(results, collisions, config):
         # This is less precise but feasible without massive code replication.
 
         # Let's use the full precomputation data to get segment timing for the original paths.
-        mover_pos_at_time, T_global = _precompute_mover_positions(results, config)
-
-        # This helper function needs to be augmented to also return the segment timing dataframes
+        mover_pos_at_time, T_global, mover_u_at_time = _precompute_mover_positions(results, config)        # This helper function needs to be augmented to also return the segment timing dataframes
         # (df_mover with T_cum_start/end) which are crucial here.
 
         # --- Assume success in identifying the affected segment `seg_idx` and its time `T_seg_orig` ---
