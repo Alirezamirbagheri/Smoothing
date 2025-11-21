@@ -155,18 +155,23 @@ def animate_global_movers(results, num_movers, config):
         mover_segment_density.append(seg_density)
 
     # --- 2. Setup Animation (Fixes NameError) ---
-    # Assuming get_limits is defined in animations.py
-    min_x, max_x, min_y, max_y = get_limits(results)
+        # Calculate limits based on table dimensions from config
+        min_x = 0 - config['PLOT_PADDING_MM']
+        max_x = config['TABLE_LENGTH_MM'] + config['PLOT_PADDING_MM']
+        min_y = 0 - config['PLOT_PADDING_MM']
+        max_y = config['TABLE_WIDTH_MM'] + config['PLOT_PADDING_MM']
 
-    fig, ax = plt.subplots(figsize=(10, 10))
+        fig, ax = plt.subplots(figsize=(10, 10))
 
-    ax.set_xlim(min_x, max_x)
-    ax.set_ylim(min_y, max_y)
-    ax.set_aspect('equal', adjustable='box')
-    ax.set_title('Global Mover Animation with Raw Point Density Scaling')
-    ax.set_xlabel('X Position (mm)')
-    ax.set_ylabel('Y Position (mm)')
-    ax.grid(True)
+        # *** SET AXIS LIMITS USING TABLE DIMENSIONS ***
+        ax.set_xlim(min_x, max_x)
+        ax.set_ylim(min_y, max_y)
+
+        ax.set_aspect('equal', adjustable='box')
+        ax.set_title('Global Mover Animation with Raw Point Density Scaling')
+        ax.set_xlabel(f'X Position (mm, Table Length: {config["TABLE_LENGTH_MM"]:.0f}mm)')
+        ax.set_ylabel(f'Y Position (mm, Table Width: {config["TABLE_WIDTH_MM"]:.0f}mm)')
+        ax.grid(True)
 
     # Plot all paths
     for i, data in enumerate(results):

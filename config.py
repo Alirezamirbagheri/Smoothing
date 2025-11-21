@@ -30,3 +30,8 @@ K_ORDER = 3
 MAX_DEV_ALLOWED = 10
 MOVER_SIZE = 155.0  # mm, side length of square mover
 VELOCITY = 200.0    # mm/s (assumed for global animation)
+
+# --- TABLE DIMENSIONS FOR PLOTTING LIMITS ---
+TABLE_LENGTH_MM = 1785.0
+TABLE_WIDTH_MM = 1275.0
+PLOT_PADDING_MM = 0.0  # Extra space around the table limits
