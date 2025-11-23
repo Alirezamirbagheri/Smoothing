@@ -75,3 +75,11 @@ def local_to_global_ascending(coeffs, u0):
     A1 = a1 - 2 * a2 * u0 + 3 * a3 * u0 ** 2
     A0 = a0 - a1 * u0 + a2 * u0 ** 2 - a3 * u0 ** 3
     return A0, A1, A2, A3
+
+def calculate_total_rp_before(mover_id, target_rawpoint_index, coeff_file_path):
+    # 1. Load the dataframe from coeff_file_path
+    # 2. Filter for mover_id
+    # 3. Calculate CumRawPointsEnd and CumRawPointsStart
+    # 4. Find the segment where CumRawPointsStart < target_rawpoint_index
+    # 5. Return the CumRawPointsStart of that segment + the segment's RP up to the target index.
+    return total_rp_sum

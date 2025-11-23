@@ -2,27 +2,33 @@
 
 import numpy as np
 import pandas as pd
-from config import *  # To access configuration constants
-from scipy.interpolate import splev  # Needed for path length re-calculation if necessary
-from collision_check import _precompute_mover_positions  # Reuse the precomputation logic
+from config import *  # The following imports are not strictly needed for this new approach but are kept for module consistency
+from scipy.interpolate import splev
+from collision_check import _precompute_mover_positions
 
 # --- Configuration Constants for Avoidance ---
-COLLISION_BUFFER_SEC = 2.0  # Time window before and after the collision point
-VELOCITY_ADJUSTMENT_FACTOR = 0.8  # Factor to reduce/increase velocity (e.g., reduce by 50% / increase by 50%)
+# These are no longer used for the calculation but define the margin and FPS
+TIME_ADJUSTMENT_FACTOR = 0.05
+FPS = 25  # Define the constant FPS here for use in time calculations
 
-# Add FPS definition here, or inside resolve_collisions
-FPS = 25 # Define the constant FPS here for use in time calculations
-def resolve_collisions(results, collisions, config):
+def resolve_collisions(results, collisions_info, config):
     """
-    Applies local velocity adjustments to resolve collisions and generates
-    an updated coefficient DataFrame for the new time profile.
+    Applies the Time Buffering Collision Avoidance strategy:
+    1. Calculates the required buffer time (duration * 1.10) for each collision event.
+    2. Adds this buffer time to the 'NumRawPoints' of the segment preceding the collision
+       for the yielding mover (lower Mover ID).
+
+    Args:
+        results (list): List of spline coefficient dictionaries.
+        collisions_info (list): Detailed list of collision events (start/end rawpoints).
+        config (dict): Configuration parameters.
 
     Returns:
-        df_coeff_updated (pd.DataFrame): The new set of segment coefficients.
-        collision_resolved (bool): True if all collisions were successfully handled.
+        df_coeff_avoidance (pd.DataFrame): The new set of segment coefficients.
+        collision_resolved (bool): True if adjustments were made.
     """
-    if not collisions:
-        print("No collisions detected. No avoidance necessary.")
+    if not collisions_info:
+        print("✅ No collision events detected. No avoidance necessary.")
         return None, True
 
     # Load the base segment coefficients to modify
@@ -33,136 +39,137 @@ def resolve_collisions(results, collisions, config):
         return None, False
 
     df_coeff_avoidance = df_coeff.copy()
+    total_time_added_rp = 0
 
-    # We will track time adjustments needed for each mover
-    mover_time_adjustment = {i + 1: 0.0 for i in range(len(results))}
+    # 0. Pre-calculate total length and total raw points (time) for each mover
+    mover_totals = df_coeff_avoidance.groupby('Mover').agg(
+        TotalLength=('Length_mm', 'sum'),
+        TotalRP=('NumRawPoints', 'sum')
+    )
+    # Calculate the average velocity (or a metric proportional to it)
+    mover_totals['AvgVelocityMetric'] = mover_totals['TotalLength'] / mover_totals['TotalRP']
 
-    # --- 1. Process Collisions and Apply Local Velocity Changes ---
-    for col_info in collisions:
-        mover_A_id = col_info['Mover_A']
-        mover_B_id = col_info['Mover_B']
-        t_collision = col_info['Time_sec']
+    # 1. Calculate cumulative raw points for segment lookup
+    df_coeff_avoidance['CumRawPointsEnd'] = df_coeff_avoidance.groupby('Mover')['NumRawPoints'].cumsum()
+    # The start of a segment's raw points is the end of the previous segment
+    df_coeff_avoidance['CumRawPointsStart'] = df_coeff_avoidance.groupby('Mover')['CumRawPointsEnd'].shift(1,
+                                                                                                           fill_value=0)
 
-        # Define the conflict window based on the collision time
-        t_start_window = max(0, t_collision - COLLISION_BUFFER_SEC)
-        t_end_window = t_collision + COLLISION_BUFFER_SEC
+    print("\n--- Applying Time Buffering Strategy ---")
 
-        # --- Decision: Who yields? ---
-        # For simplicity, let's assume the mover with the LOWER ID yields (Mover A)
-        # and the mover with the HIGHER ID proceeds (Mover B).
-        mover_yield_id = min(mover_A_id, mover_B_id)
-        mover_pass_id = max(mover_A_id, mover_B_id)
+    # Group adjustments needed by mover to handle multiple collisions
+    mover_adjustments = {}  # {mover_id: [{'rp_index': N, 'buffer_rp': M}, ...]}
 
-        print(f"\nResolving conflict between M{mover_yield_id} (Yield) and M{mover_pass_id} (Pass)...")
+    for col_pair in collisions_info:
+        # Determine who yields (lower ID yields) and who passes (higher ID passes)
+        mover_A_id = col_pair['Mover_A']
+        mover_B_id = col_pair['Mover_B']
 
-        # Use the density-scaled time profile to find segments/time
-        # Note: This is simplified. Ideally, we would need to run the full precomputation
-        # inside this module to get T_cum_start/end for the segments.
+        # --- NEW DECISION LOGIC: Faster Mover Yields ---
+        vel_A = mover_totals.loc[mover_A_id, 'AvgVelocityMetric']
+        vel_B = mover_totals.loc[mover_B_id, 'AvgVelocityMetric']
 
-        # To keep this code short and focused, we'll assume df_coeff has a pre-calculated
-        # cumulative time column (T_cum_end) from the base run. If not, this needs to be
-        # recalculated here before use.
+        if vel_A > vel_B:
+            mover_yield_id = mover_A_id
+            mover_pass_id = mover_B_id
+        else:
+            # If velocities are equal, or B is faster, B yields (or use a tie-breaker like lower ID)
+            # Choosing B yields if V_A <= V_B, to ensure one mover is always chosen.
+            mover_yield_id = mover_B_id
+            mover_pass_id = mover_A_id
+        # -----------------------------------------------
 
-        # --- Update Segments for Mover YIELD (M_yield) ---
-        df_yield = df_coeff_avoidance[df_coeff_avoidance['Mover'] == mover_yield_id]
+        if mover_yield_id not in mover_adjustments:
+            mover_adjustments[mover_yield_id] = []
+        for event in col_pair['Collision_Events']:
+            duration_rp = event['duration_rp']
+            rp_placement_index = event['start_rawpoint']
 
-        # Find segments active within the conflict window
-        # (This requires T_cum_start/end, which is *not* in the base COEFF_OUTPUT_FILE_UPDATED.
-        # This is a major structural challenge that requires T_cum recalculation.)
+            # 1. Calculation of adjustment_rp (which we were calling buffer_rp)
+            if TIME_ADJUSTMENT_FACTOR >= 1.0:
+                adjustment_rp = int(duration_rp * TIME_ADJUSTMENT_FACTOR)
+                print(f"Factor >= 1.0. Applying buffer {adjustment_rp} RP.")
+            else:
+                adjustment_rp = int(duration_rp * (1 / TIME_ADJUSTMENT_FACTOR))
+                print(f"Factor < 1.0. Applying larger buffer {adjustment_rp} RP.")
 
-        # --- CRITICAL SIMPLIFICATION: ---
-        # Instead of calculating T_cum here, we will identify the segment *containing* the
-        # collision point and apply the change to that segment and its neighbours.
-        # This is less precise but feasible without massive code replication.
+            # --- The variable is now adjustment_rp, not buffer_rp! ---
 
-        # Let's use the full precomputation data to get segment timing for the original paths.
-        mover_pos_at_time, T_global, mover_u_at_time = _precompute_mover_positions(results, config)        # This helper function needs to be augmented to also return the segment timing dataframes
-        # (df_mover with T_cum_start/end) which are crucial here.
+            # 2. Store the adjustment
+            mover_adjustments[mover_yield_id].append({
+                'rp_index': rp_placement_index,
+                'buffer_rp': adjustment_rp
+            })
 
-        # --- Assume success in identifying the affected segment `seg_idx` and its time `T_seg_orig` ---
-        # DUE TO CODE LIMITATIONS, I'LL DEMONSTRATE THE LOGIC RATHER THAN THE LOOKUP:
+            # 3. Use the calculated values in a print statement *inside* the event loop
+            # Note: We use adjustment_rp here, as that is the local variable holding the buffer size.
+            vel_A = mover_totals.loc[mover_A_id, 'AvgVelocityMetric']
+            vel_B = mover_totals.loc[mover_B_id, 'AvgVelocityMetric']
 
-        # Let's assume the entire path of the yield mover is affected equally (simplification for debt calculation)
+            print(
+                f"M{mover_yield_id} (V={vel_A if mover_yield_id == mover_A_id else vel_B:.2f}) yields to M{mover_pass_id} (V={vel_B if mover_yield_id == mover_A_id else vel_A:.2f}). Buffering {adjustment_rp} RP.")
+         # --- 4. Apply Adjustments to Segments ---
 
-        # For a yield mover (M_yield):
-        time_added = COLLISION_BUFFER_SEC * VELOCITY_ADJUSTMENT_FACTOR  # Time lost due to slowing down
+    # NOTE: The logic for merging close buffers (as requested) is complex and heavily relies
+    # on detailed segment boundaries. For initial implementation, we apply each buffer
+    # individually to the segment immediately preceding the collision start.
 
-        # For a passing mover (M_pass):
-        time_subtracted = COLLISION_BUFFER_SEC * VELOCITY_ADJUSTMENT_FACTOR  # Time gained due to speeding up
+    for mover_id, adjustments in mover_adjustments.items():
+        # Get the coefficient slice for the current mover
+        df_mover_slice = df_coeff_avoidance[df_coeff_avoidance['Mover'] == mover_id]
 
-        # Apply the time debt/credit to the movers
-        mover_time_adjustment[mover_yield_id] += time_added
-        mover_time_adjustment[mover_pass_id] -= time_subtracted
+        for adjustment in adjustments:
+            rp_placement_index = adjustment['rp_index']
+            buffer_rp = adjustment['buffer_rp']
 
-        # --- Apply change to the specific segments (conceptually) ---
-        # New V_yield = V_orig * (1 - VELOCITY_ADJUSTMENT_FACTOR)
-        # New T_yield = T_orig / (1 - VELOCITY_ADJUSTMENT_FACTOR)
-        # New RawPoints_yield = RawPoints_orig * (1 + delta_time / T_orig)
+            # Find the segment index that is active immediately BEFORE the collision point.
+            # We look for the last segment that ends *before* or *at* the placement index.
+            # Safety margin: rp_placement_index > 0 guaranteed by collision check.
 
-        # For demonstration, we'll focus on the final compensation logic.
+            # Select segments that contain or end just before the placement index.
+            # We target the row index where CumRawPointsEnd is >= rp_placement_index (segment containing)
+            # and take the row *before* it, or the containing segment itself if we can't find the preceding one.
 
-    # --- 2. Compensate Time Debt/Credit in Remaining Segments ---
+            # Find the segment that covers the raw point immediately preceding the collision start
+            target_rp_index = max(0, rp_placement_index - 1)
 
-    resolution_successful = True
+            target_segment_rows = df_mover_slice[
+                (df_mover_slice['CumRawPointsStart'] <= target_rp_index) &
+                (df_mover_slice['CumRawPointsEnd'] > target_rp_index)
+                ]
 
-    for mover_id, time_debt in mover_time_adjustment.items():
-        if time_debt == 0.0:
-            continue
+            if not target_segment_rows.empty:
+                # Get the global index of the segment row to modify
+                target_global_index = target_segment_rows.index[0]
 
-        df_mover = df_coeff_avoidance[df_coeff_avoidance['Mover'] == mover_id].copy()
+                # 5. Add the buffer time to the segment's NumRawPoints
+                df_coeff_avoidance.loc[target_global_index, 'NumRawPoints'] += buffer_rp
+                total_time_added_rp += buffer_rp
 
-        # This line is where the error occurred:
-        total_orig_time = df_mover['NumRawPoints'].sum() / FPS  # Now FPS is defined
-        # Calculate the compensation period needed (e.g., same duration as the conflict)
-        compensation_period_sec = COLLISION_BUFFER_SEC * 2.0  # The full window, simplified
+                print(
+                    f"Mover {mover_id}: Added {buffer_rp} RP to Segment {target_segment_rows['Segment'].iloc[0]} (ends at RP {df_coeff_avoidance.loc[target_global_index, 'CumRawPointsEnd']}).")
 
-        # Find segments available for compensation (e.g., segments AFTER the conflict area)
-        # For simplicity, use the entire path length for average speed calculation
-        path_len = df_mover['Length_mm'].sum()
-
-        # If the mover needs to speed up (time_debt < 0):
-        if time_debt < 0:
-            print(f"Mover {mover_id} needs to compensate (speed up) by {-time_debt:.3f} s.")
-            # New total time = Original Total Time - |Time Debt|
-            new_total_time = total_orig_time - abs(time_debt)
-
-            if new_total_time <= 0:
-                print(f"🛑 Cannot compensate: New total time is zero or negative for Mover {mover_id}.")
-                resolution_successful = False
-                continue
-
-            # The speedup is distributed proportionally to all segments based on their length
-            time_factor = new_total_time / total_orig_time
-            df_coeff_avoidance.loc[df_coeff_avoidance['Mover'] == mover_id, 'NumRawPoints'] *= time_factor
-
-        # If the mover needs to slow down (time_debt > 0):
-        elif time_debt > 0:
-            print(f"Mover {mover_id} needs to compensate (slow down) by {time_debt:.3f} s.")
-            # New total time = Original Total Time + Time Debt
-            new_total_time = total_orig_time + time_debt
-
-            # The slowdown is distributed proportionally to all segments based on their length
-            time_factor = new_total_time / total_orig_time
-            df_coeff_avoidance.loc[df_coeff_avoidance['Mover'] == mover_id, 'NumRawPoints'] *= time_factor
-
-        # Re-convert Raw Points to integers (as they represent steps)
-        df_coeff_avoidance.loc[df_coeff_avoidance['Mover'] == mover_id, 'NumRawPoints'] = \
-            df_coeff_avoidance.loc[df_coeff_avoidance['Mover'] == mover_id, 'NumRawPoints'].round().astype(int)
-
-    # --- 3. Save the Updated Coefficients ---
-    if resolution_successful:
+                # IMPORTANT: Since we modified the raw points of a segment, the cumulative
+                # indices for all following segments of this mover are now WRONG.
+                # We must recalculate the cumulative points after this adjustment.
+                df_coeff_avoidance['CumRawPointsEnd'] = df_coeff_avoidance.groupby('Mover')['NumRawPoints'].cumsum()
+                df_coeff_avoidance['CumRawPointsStart'] = df_coeff_avoidance.groupby('Mover')['CumRawPointsEnd'].shift(
+                    1, fill_value=0)
+            else:
+                print(f"Warning: Could not find segment for Mover {mover_id} at RP {rp_placement_index}.")
+    df_coeff_avoidance.loc[target_global_index, 'NumRawPoints'] += adjustment_rp
+    # --- 6. Save the Updated Coefficients ---
+    if total_time_added_rp > 0:
+        # Final cleanup before saving: ensure NumRawPoints are integers
+        df_coeff_avoidance['NumRawPoints'] = df_coeff_avoidance['NumRawPoints'].round().astype(int)
         output_file = config['COEFF_OUTPUT_FILE_AVOIDANCE']
+
+        # Remove the temporary cumulative columns before saving
+        df_coeff_avoidance = df_coeff_avoidance.drop(columns=['CumRawPointsEnd', 'CumRawPointsStart'])
+
         df_coeff_avoidance.to_csv(output_file, index=False)
-        print(f"✅ Avoidance solution saved to {output_file}.")
+        print(f"✅ Avoidance solution (Time Buffering) saved to {output_file}.")
         return df_coeff_avoidance, True
     else:
-        print("❌ Collision avoidance failed to find a valid time profile.")
+        print("❌ Collision avoidance made no successful adjustments.")
         return None, False
-
-
-# Helper function to write results in main (optional, but good practice)
-def save_avoidance_points_csv(df_coeff_avoidance, config):
-    # This function should regenerate the 'smoothed points' CSV based on the new
-    # raw point counts and save it to a new file (e.g., SMOOTHED_POINTS_FILE_AVOIDANCE)
-    print("Function to save new smoothed points would run here...")
-    pass  # Implementation requires accessing spline data which isn't passed here.

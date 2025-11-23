@@ -99,14 +99,17 @@ def _precompute_mover_positions(results, config):
 def check_mover_collisions(results, config):
     """
     Checks for spatial and temporal collisions between all mover pairs
-    using the AABB overlap criteria.
+    using the AABB overlap criteria and extracts all continuous collision events
+    needed for time buffering.
     """
-    mover_pos_at_time, T_global, mover_u_at_time = _precompute_mover_positions(results, config)    # ... (Error checking remains the same) ...
+    # NOTE: The return signature MUST match the function definition
+    # Ensure _precompute_mover_positions returns all three values
+    mover_pos_at_time, T_global, mover_u_at_time = _precompute_mover_positions(results, config)
 
     num_movers = len(results)
-    # Collision is defined by AABB overlap: distance in X < S AND distance in Y < S
     threshold = config['MOVER_SIZE']
-    collisions = []
+    # CHANGE: 'collisions' now holds detailed event data, not just the first instance
+    collisions_info = []
 
     print("\n--- Running Inter-Mover Collision Check (AABB) ---")
 
@@ -122,23 +125,53 @@ def check_mover_collisions(results, config):
             # 2. Collision occurs if both conditions are met (AABB overlap)
             collision_mask = (dist_x < threshold) & (dist_y < threshold)
 
-            collision_frames = np.where(collision_mask)[0]
+            # collision_indices holds the raw point (timestep) indices where collision occurred
+            collision_indices = np.where(collision_mask)[0]
 
-            if collision_frames.size > 0:
-                # Collision found! Report the first instance.
-                first_frame = collision_frames[0]
-                collision_time = T_global[first_frame]
+            if collision_indices.size > 0:
+                # --- NEW LOGIC: Group contiguous raw points into collision events ---
+                events = []
 
-                collisions.append({
+                # Identify where contiguous blocks of collision indices start
+                # np.diff is > 1 where there is a break (a gap of at least 1 rawpoint)
+                diffs = np.diff(collision_indices)
+
+                # Indices in collision_indices where a new contiguous block starts
+                event_starts_indices = np.where(diffs > 1)[0] + 1
+                event_starts_indices = np.insert(event_starts_indices, 0, 0)  # The first block starts at index 0
+
+                for k in range(len(event_starts_indices)):
+
+                    # 1. Get the Raw Point Index for the start
+                    start_idx_raw = collision_indices[event_starts_indices[k]]
+
+                    # 2. Get the Raw Point Index for the end of the block
+                    if k < len(event_starts_indices) - 1:
+                        # End is the index just before the next block starts
+                        end_idx_raw = collision_indices[event_starts_indices[k + 1] - 1]
+                    else:
+                        # Last block ends at the last recorded collision index
+                        end_idx_raw = collision_indices[-1]
+
+                    duration_rp = end_idx_raw - start_idx_raw + 1
+
+                    events.append({
+                        'start_rawpoint': start_idx_raw,
+                        'end_rawpoint': end_idx_raw,
+                        'duration_rp': duration_rp,
+                        'start_time_sec': T_global[start_idx_raw]
+                    })
+
+                collisions_info.append({
                     'Mover_A': i + 1,
                     'Mover_B': j + 1,
-                    'Time_sec': collision_time,
-                    'Position_A': pos_A[first_frame, :],
-                    'Position_B': pos_B[first_frame, :]
+                    'Collision_Events': events
                 })
-                print(f"🚨 Collision detected between Mover {i + 1} and Mover {j + 1} at T={collision_time:.3f} s.")
+                print(
+                    f"🚨 Collision events detected between Mover {i + 1} and Mover {j + 1}. Total events: {len(events)}")
 
-    if not collisions:
+    if not collisions_info:
         print("✅ No inter-mover collisions detected across the simulated time.")
 
-    return collisions
+    # CHANGE: Return the detailed collision event data structure
+    return collisions_info
