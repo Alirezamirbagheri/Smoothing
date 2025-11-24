@@ -42,4 +42,10 @@ PLOT_PADDING_MM = 0.0  # Extra space around the table limits
 # Used to calculate the margin of safety (slowdown) or required speed-up (reduction).
 #   positive means slowdown.
 #   negative means speed-up.
-TIME_ADJUSTMENT_FACTOR = - 0.2
+# TIME_ADJUSTMENT_FACTOR = - 0.2
+
+# --- Optimization Loop Parameters ---
+# Defines the initial step size for the safety factor (e.g., 0.1, 0.2, 0.3, ...)
+SAFETY_STEP_START = 0.1
+# Maximum number of steps/iterations to search in the positive and negative directions
+MAX_ITERATIONS = 5
