@@ -37,3 +37,9 @@ VELOCITY = 100.0    # mm/s (assumed for global animation)
 TABLE_LENGTH_MM = 1785.0
 TABLE_WIDTH_MM = 1275.0
 PLOT_PADDING_MM = 0.0  # Extra space around the table limits
+
+# === COLLISION AVOIDANCE PARAMETERS ===
+# Used to calculate the margin of safety (slowdown) or required speed-up (reduction).
+#   positive means slowdown.
+#   negative means speed-up.
+TIME_ADJUSTMENT_FACTOR = - 0.2

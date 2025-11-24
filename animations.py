@@ -122,8 +122,7 @@ def animate_global_movers(results, num_movers, config):
         return
 
     # --- FIX: Capture the third return variable (u-progress) ---
-    mover_pos_at_time, T_global, mover_u_at_time = _precompute_mover_positions(results, config)
-    # ---------------------------------------------
+    mover_pos_at_time, T_global, mover_u_at_time, df_coeff = _precompute_mover_positions(results, config)    # ---------------------------------------------
 
     if mover_pos_at_time is None:
         print("Warning: Could not precompute positions. Skipping global animation.")
